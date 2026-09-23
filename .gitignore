@@ -1,0 +1,11 @@
+node_modules
+dist
+data
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+dev/.state
+# mover keys and funding state (setup-movers)
+.movers
