@@ -130,7 +130,7 @@ export function MoverDrawer({ index, snap, onClose, onOpenDeposit }: { index: nu
             <th>Created</th>
             <th>Chain</th>
             <th>Status</th>
-            <th className="r">Pay → settled</th>
+            <th className="r">Landed → settled</th>
           </tr>
         </thead>
         <tbody>
@@ -143,7 +143,7 @@ export function MoverDrawer({ index, snap, onClose, onOpenDeposit }: { index: nu
               <td>
                 <StatusBadge status={d.status} />
               </td>
-              <td className="r">{d.settled_at && d.pay_mined_at ? ms(d.settled_at - d.pay_mined_at) : '—'}</td>
+              <td className="r">{d.settled_at && d.pay_landed_at ? ms(Math.max(d.settled_at - d.pay_landed_at, 0)) : '—'}</td>
             </tr>
           ))}
         </tbody>
@@ -207,7 +207,8 @@ export function DepositDrawer({ id, snap, onClose }: { id: string; snap: Snapsho
         </a>
       ) : undefined,
     });
-  if (d.pay_mined_at) steps.push({ at: d.pay_mined_at, label: 'transfer included', kind: 'local' });
+  if (d.pay_landed_at) steps.push({ at: d.pay_landed_at, label: `payment landed on-chain (block ${d.pay_block}, timestamp to the second)`, kind: 'local' });
+  if (d.pay_mined_at) steps.push({ at: d.pay_mined_at, label: 'bot saw the receipt', kind: 'local' });
   if (d.pay_error) steps.push({ at: d.updated_at ?? d.created_at, label: `payment problem: ${d.pay_error}`, kind: 'bad' });
   for (const e of data?.gum.events ?? []) {
     const bad = e.type === 'deposit.failed' || e.type === 'deposit.expired';
@@ -271,6 +272,14 @@ export function DepositDrawer({ id, snap, onClose }: { id: string; snap: Snapsho
             <dt>Payment gas</dt>
             <dd>
               {units(String(Number(BigInt(d.pay_gas_cost)) / 1e18))} {snap.chains.find((c) => c.slug === d.chain)?.nativeSymbol}
+            </dd>
+          </>
+        )}
+        {d.settled_at && d.pay_landed_at && (
+          <>
+            <dt>Landed → settled</dt>
+            <dd>
+              <b>{ms(Math.max(d.settled_at - d.pay_landed_at, 0))}</b>
             </dd>
           </>
         )}

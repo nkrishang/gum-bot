@@ -249,7 +249,8 @@ export class Bot extends EventEmitter {
     if (detected && row.detected_at == null) {
       patch.detected_at = detected;
       this.bump(row.chain, 'detected');
-      if (row.pay_mined_at) m.detectLatency.observe({ chain: row.chain }, Math.max(detected - row.pay_mined_at, 0) / 1000);
+      const landed = row.pay_landed_at ?? patch.pay_landed_at;
+      if (landed) m.detectLatency.observe({ chain: row.chain }, Math.max(detected - landed, 0) / 1000);
     }
     if ((d.status === 'paid' || d.status === 'settled') && row.ready_at == null) {
       patch.ready_at = readyTime(d) ?? Date.now();
@@ -299,7 +300,7 @@ export class Bot extends EventEmitter {
       this.totals.volumeSettled = (BigInt(this.totals.volumeSettled) + BigInt(row.amount)).toString();
       const pc = this.perChain[row.chain];
       if (pc) pc.volumeSettled = (BigInt(pc.volumeSettled) + BigInt(row.amount)).toString();
-      if (row.pay_mined_at && row.settled_at) m.settleLatency.observe({ chain: row.chain }, Math.max(row.settled_at - row.pay_mined_at, 0) / 1000);
+      if (row.pay_landed_at && row.settled_at) m.settleLatency.observe({ chain: row.chain }, Math.max(row.settled_at - row.pay_landed_at, 0) / 1000);
       if (row.settled_at) m.e2eLatency.observe({ chain: row.chain }, Math.max(row.settled_at - row.created_at, 0) / 1000);
     } else if (status === 'failed') {
       this.bump(row.chain, 'failed');

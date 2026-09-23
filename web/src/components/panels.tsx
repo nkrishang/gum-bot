@@ -87,8 +87,8 @@ export function KpiRow({ snap }: { snap: Snapshot }) {
         </div>
         <Sparkline values={perMin} />
       </div>
-      <Tile label="Deposits created" value={compact(t.created)} foot={`${t.createErrors} create errors`} />
-      <Tile label="Paid by movers" value={compact(t.paid)} foot={`${t.payErrors} payment errors`} />
+      <Tile label="Deposits created · paid" value={`${compact(t.created)} · ${compact(t.paid)}`} foot={`${t.createErrors} create errors · ${t.payErrors} payment errors`} />
+      <LandedTile snap={snap} />
       <Tile
         label="Settlement success"
         value={pct(t.settled, doneAll)}
@@ -101,6 +101,19 @@ export function KpiRow({ snap }: { snap: Snapshot }) {
         tone={t.failed + t.expired - t.expiredUnpaid > 0 ? 'critical' : undefined}
       />
       <Tile label="Open deposits" value={String(snap.open)} foot={`${t.topups} gas top-ups · ${t.cycles} cycles`} />
+    </div>
+  );
+}
+
+/** The headline: payment landed at its address (block timestamp) → Gum marked it settled. */
+function LandedTile({ snap }: { snap: Snapshot }) {
+  const all = Object.values(snap.latency.byChain).map((c) => c.settle).filter((s) => s.n > 0);
+  const s = all.sort((a, b) => b.n - a.n)[0];
+  return (
+    <div className="card tile" title="From the block timestamp of the mover's payment to Gum's settled_at. Monad timestamps are whole seconds, so this can read up to 1 s high, never low.">
+      <div className="label">Landed → settled · last hour</div>
+      <div className="value">{s ? ms(s.p50) : '—'}</div>
+      <div className="foot">{s ? `p90 ${ms(s.p90)} · p99 ${ms(s.p99)} · max ${ms(s.max)} · n=${s.n.toLocaleString()}` : 'waiting for settlements'}</div>
     </div>
   );
 }
@@ -386,11 +399,12 @@ export function LatencyCard({ snap }: { snap: Snapshot }) {
         <thead>
           <tr>
             <th>Chain</th>
-            <th className="r">Pay inclusion p50</th>
-            <th className="r">Detect p50</th>
-            <th className="r">Settle p50</th>
-            <th className="r">Settle p90</th>
-            <th className="r">End-to-end p50</th>
+            <th className="r">Landed → settled p50</th>
+            <th className="r">p90</th>
+            <th className="r">p99</th>
+            <th className="r">Landed → detected p50</th>
+            <th className="r">Inclusion p50</th>
+            <th className="r">Create → settled p50</th>
           </tr>
         </thead>
         <tbody>
@@ -401,10 +415,13 @@ export function LatencyCard({ snap }: { snap: Snapshot }) {
                 <td>
                   <ChainTag slug={c} />
                 </td>
-                <td className="r">{ms(l?.inclusion.p50)}</td>
-                <td className="r">{ms(l?.detect.p50)}</td>
-                <td className="r">{ms(l?.settle.p50)}</td>
+                <td className="r">
+                  <b>{ms(l?.settle.p50)}</b>
+                </td>
                 <td className="r">{ms(l?.settle.p90)}</td>
+                <td className="r">{ms(l?.settle.p99)}</td>
+                <td className="r">{ms(l?.detect.p50)}</td>
+                <td className="r">{ms(l?.inclusion.p50)}</td>
                 <td className="r">{ms(l?.e2e.p50)}</td>
               </tr>
             );
@@ -412,7 +429,8 @@ export function LatencyCard({ snap }: { snap: Snapshot }) {
         </tbody>
       </table>
       <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-        Detect and settle are measured from the mover's payment receipt to Gum's timestamps.
+        Landed = the block timestamp of the mover's payment (Monad: whole seconds, so up to 1 s conservative). Inclusion = signed → landed.
+        The bot's own receipt lag (landed → our RPC reported it) is p50 {ms(Object.values(byChain)[0]?.receiptLag?.p50)} and is not part of any Gum figure.
       </div>
     </div>
   );
@@ -647,10 +665,10 @@ export function DepositsTable({ snap, rows, onOpen }: { snap: Snapshot; rows: De
               <th>Chain</th>
               <th>Status</th>
               <th>Payment</th>
-              <th className="r">Create</th>
-              <th className="r">Inclusion</th>
-              <th className="r">Pay → settled</th>
-              <th className="r">Total</th>
+              <th className="r" title="POST /v1/deposit latency">Create</th>
+              <th className="r" title="Mover's transfer signed → landed on-chain (block timestamp)">Inclusion</th>
+              <th className="r" title="Payment landed at the address (block timestamp) → Gum settled_at">Landed → settled</th>
+              <th className="r" title="Deposit created → settled">Total</th>
             </tr>
           </thead>
           <tbody>
@@ -678,8 +696,16 @@ export function DepositsTable({ snap, rows, onOpen }: { snap: Snapshot; rows: De
                   )}
                 </td>
                 <td className="r">{ms(d.create_ms)}</td>
-                <td className="r">{d.pay_mined_at && d.pay_sent_at ? ms(d.pay_mined_at - d.pay_sent_at) : '—'}</td>
-                <td className="r">{d.settled_at && d.pay_mined_at ? ms(d.settled_at - d.pay_mined_at) : d.pay_mined_at && !d.terminal ? <span className="muted">{ms(snap.now - d.pay_mined_at)}…</span> : '—'}</td>
+                <td className="r">{d.pay_landed_at && d.pay_sent_at ? ms(Math.max(d.pay_landed_at - d.pay_sent_at, 0)) : '—'}</td>
+                <td className="r">
+                  {d.settled_at && d.pay_landed_at ? (
+                    <b>{ms(Math.max(d.settled_at - d.pay_landed_at, 0))}</b>
+                  ) : d.pay_landed_at && !d.terminal ? (
+                    <span className="muted">{ms(snap.now - d.pay_landed_at)}…</span>
+                  ) : (
+                    '—'
+                  )}
+                </td>
                 <td className="r">{d.settled_at ? ms(d.settled_at - d.created_at) : '—'}</td>
               </tr>
             ))}

@@ -326,6 +326,8 @@ export class Runner {
       expires_at: Date.parse(deposit.expires_at),
       pay_sent_at: null,
       pay_mined_at: null,
+      pay_block: null,
+      pay_landed_at: null,
       detected_at: null,
       ready_at: null,
       settled_at: null,
@@ -412,9 +414,14 @@ export class Runner {
       const receipt = await chain.public.waitForTransactionReceipt({ hash, timeout: 180_000, pollingInterval: 1_000 });
       if (receipt.status !== 'success') throw new Error(`transfer ${hash} reverted`);
       const minedAt = Date.now();
+      // When the payment landed: its block's timestamp. This, not when we saw the receipt, is where
+      // Gum's clock starts (Monad block timestamps are whole seconds, so it can read up to 1 s early).
+      const landedAt = await this.blockTime(chain.public, receipt.blockNumber).catch(() => null);
       this.update(row, {
         pay_status: 'mined',
         pay_mined_at: minedAt,
+        pay_block: Number(receipt.blockNumber),
+        pay_landed_at: landedAt,
         pay_gas_cost: (receipt.gasUsed * receipt.effectiveGasPrice).toString(),
       });
       cycle.paid++;
@@ -422,7 +429,7 @@ export class Runner {
       mv.stats.paid++;
       mv.phase = mv.activeDeposit === row.id ? 'settling' : mv.phase;
       m.payments.inc({ chain: slug, outcome: 'success' });
-      m.payLatency.observe({ chain: slug }, (minedAt - sentAt) / 1000);
+      if (landedAt) m.payLatency.observe({ chain: slug }, Math.max(landedAt - sentAt, 0) / 1000);
       void this.treasury.refreshMover(mv, slug);
     } catch (err) {
       // Broadcast but unconfirmed or reverted. The mover's balance tells whether the funds moved;
@@ -470,6 +477,20 @@ export class Runner {
       }
     }
     return undefined;
+  }
+
+  /** Block timestamp in ms, cached: a burst of payments usually shares a handful of blocks. */
+  private blockTimes = new Map<string, number>();
+  private async blockTime(pub: PublicClient, block: bigint): Promise<number> {
+    const key = `${pub.chain?.id}:${block}`;
+    const cached = this.blockTimes.get(key);
+    if (cached) return cached;
+    const b = (await pub.request({ method: 'eth_getBlockByNumber', params: [`0x${block.toString(16)}`, false] })) as { timestamp: string; timestampMs?: string } | null;
+    if (!b) throw new Error(`block ${block} not found`);
+    const t = b.timestampMs ? Number(b.timestampMs) : Number(BigInt(b.timestamp)) * 1000;
+    this.blockTimes.set(key, t);
+    if (this.blockTimes.size > 512) this.blockTimes.delete(this.blockTimes.keys().next().value!);
+    return t;
   }
 
   /**

@@ -104,6 +104,8 @@ export interface DepositView {
   expires_at: number;
   pay_sent_at: number | null;
   pay_mined_at: number | null;
+  pay_block: number | null;
+  pay_landed_at: number | null;
   detected_at: number | null;
   ready_at: number | null;
   settled_at: number | null;
@@ -169,7 +171,7 @@ export interface Snapshot {
   chains: ChainView[];
   movers: MoverView[];
   latency: {
-    byChain: Record<string, { settle: Summary; detect: Summary; e2e: Summary; inclusion: Summary; create: Summary }>;
+    byChain: Record<string, { settle: Summary; detect: Summary; e2e: Summary; inclusion: Summary; create: Summary; receiptLag: Summary }>;
     stages: Stage[];
     sample: number;
   };

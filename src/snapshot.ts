@@ -13,8 +13,8 @@ import type { Treasury } from './treasury.ts';
 const STAGES: Array<{ key: string; label: string; from: (r: DepositRow, s: Record<string, number>) => number | null | undefined; to: (r: DepositRow, s: Record<string, number>) => number | null | undefined }> = [
   { key: 'create', label: 'Create API', from: (r) => (r.create_ms != null ? r.created_at - r.create_ms : null), to: (r) => r.created_at },
   { key: 'dispatch', label: 'Sign & broadcast', from: (r) => r.created_at, to: (r) => r.pay_sent_at },
-  { key: 'inclusion', label: 'Payment inclusion', from: (r) => r.pay_sent_at, to: (r) => r.pay_mined_at },
-  { key: 'detect', label: 'Gum detects', from: (r) => r.pay_mined_at, to: (r) => r.detected_at },
+  { key: 'inclusion', label: 'Payment lands on-chain', from: (r) => r.pay_sent_at, to: (r) => r.pay_landed_at },
+  { key: 'detect', label: 'Gum detects', from: (r) => r.pay_landed_at, to: (r) => r.detected_at },
   { key: 'confirm', label: 'Confirmations', from: (r) => r.detected_at, to: (r, s) => s['deposit.ready'] ?? r.ready_at },
   { key: 'submit', label: 'Settlement submit', from: (r, s) => s['deposit.ready'] ?? r.ready_at, to: (_r, s) => s['deposit.settlement_submitted'] },
   { key: 'include', label: 'Settlement inclusion', from: (_r, s) => s['deposit.settlement_submitted'], to: (_r, s) => s['deposit.settlement_included'] },
@@ -53,11 +53,13 @@ export class SnapshotBuilder {
     for (const slug of bot.chains.keys()) {
       const rs = settled.filter((r) => r.chain === slug);
       byChain[slug] = {
-        settle: summarize(rs.filter((r) => r.pay_mined_at && r.settled_at).map((r) => r.settled_at! - r.pay_mined_at!)),
-        // Gum can see a transfer at head before the mover's receipt poll returns; clamp to zero.
-        detect: summarize(rs.filter((r) => r.pay_mined_at && r.detected_at).map((r) => Math.max(r.detected_at! - r.pay_mined_at!, 0))),
+        // The headline: payment landed at the address (block timestamp) → Gum marked it settled.
+        settle: summarize(rs.filter((r) => r.pay_landed_at && r.settled_at).map((r) => Math.max(r.settled_at! - r.pay_landed_at!, 0))),
+        detect: summarize(rs.filter((r) => r.pay_landed_at && r.detected_at).map((r) => Math.max(r.detected_at! - r.pay_landed_at!, 0))),
         e2e: summarize(rs.filter((r) => r.settled_at).map((r) => r.settled_at! - r.created_at)),
-        inclusion: summarize(rs.filter((r) => r.pay_sent_at && r.pay_mined_at).map((r) => r.pay_mined_at! - r.pay_sent_at!)),
+        inclusion: summarize(rs.filter((r) => r.pay_sent_at && r.pay_landed_at).map((r) => Math.max(r.pay_landed_at! - r.pay_sent_at!, 0))),
+        // Bot-side only: how long after landing our own RPC reported the receipt. Not Gum latency.
+        receiptLag: summarize(rs.filter((r) => r.pay_landed_at && r.pay_mined_at).map((r) => Math.max(r.pay_mined_at! - r.pay_landed_at!, 0))),
         create: summarize(rs.filter((r) => r.create_ms != null).map((r) => r.create_ms!)),
       };
     }

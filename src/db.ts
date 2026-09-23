@@ -28,6 +28,9 @@ export interface DepositRow {
   expires_at: number;
   pay_sent_at: number | null;
   pay_mined_at: number | null;
+  /** Block that included the mover's payment, and its timestamp (ms): when the payment landed. */
+  pay_block: number | null;
+  pay_landed_at: number | null;
   detected_at: number | null;
   ready_at: number | null;
   settled_at: number | null;
@@ -93,7 +96,7 @@ CREATE TABLE IF NOT EXISTS deposits (
   created_at INTEGER NOT NULL,
   gum_created_at INTEGER,
   expires_at INTEGER NOT NULL,
-  pay_sent_at INTEGER, pay_mined_at INTEGER,
+  pay_sent_at INTEGER, pay_mined_at INTEGER, pay_block INTEGER, pay_landed_at INTEGER,
   detected_at INTEGER, ready_at INTEGER, settled_at INTEGER, terminal_at INTEGER,
   settle_tx TEXT, failure_code TEXT, failure_message TEXT,
   stages TEXT, webhooks TEXT,
@@ -151,6 +154,15 @@ export class Db {
     this.sql = new DatabaseSync(join(dataDir, 'gum-bot.db'));
     this.sql.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;');
     this.sql.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /** Adds columns introduced after a database was created. */
+  private migrate() {
+    const have = new Set((this.sql.prepare('PRAGMA table_info(deposits)').all() as Array<{ name: string }>).map((c) => c.name));
+    for (const [col, type] of [['pay_block', 'INTEGER'], ['pay_landed_at', 'INTEGER']] as const) {
+      if (!have.has(col)) this.sql.exec(`ALTER TABLE deposits ADD COLUMN ${col} ${type}`);
+    }
   }
 
   close() {
