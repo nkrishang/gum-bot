@@ -21,7 +21,8 @@
     "local": "node --disable-warning=ExperimentalWarning --import tsx dev/local.ts",
     "bootstrap": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env --import tsx scripts/bootstrap.ts",
     "test:e2e": "node --disable-warning=ExperimentalWarning --import tsx --test test/local.e2e.ts",
-    "setup-movers": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env --import tsx scripts/setup-movers.ts"
+    "setup-movers": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env --import tsx scripts/setup-movers.ts",
+    "recover-stranded": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env --import tsx scripts/recover-stranded.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",

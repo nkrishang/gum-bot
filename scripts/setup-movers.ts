@@ -5,6 +5,13 @@
  *
  *   pnpm setup-movers          # show the plan, confirm, send
  *   pnpm setup-movers --yes    # no prompt
+ *   pnpm setup-movers --refill 2026-09-23-outbox-stall   # refill movers whose USDC was lost
+ *
+ * Refill rounds: a mover is funded once per chain, and never again by a plain run. When movers lose
+ * their USDC (e.g. deposits that expired after payment), `--refill <label>` starts a named round.
+ * On its first run the round takes every mover whose live balance is below one deposit and that has
+ * no live deposit in flight. Re-running the same label resumes that exact set with the same guarantees,
+ * so a round can never pay a mover twice. A new incident gets a new label.
  *
  * Funding is tracked per mover *per chain*, so changing the rotation and re-running funds movers on
  * their new chain: e.g. CHAINS=monad + MOVER_CHAIN_ROTATION=monad funds every mover on Monad, skipping
@@ -52,6 +59,7 @@ const { values: args } = parseArgs({
   args: process.argv.slice(2).filter((a) => a !== '--'),
   options: {
     yes: { type: 'boolean', default: false },
+    refill: { type: 'string' },
     state: { type: 'string', default: '.movers/state.json' },
     // A transfer not mined after this long is re-sent with higher fees (same nonce).
     'stuck-after': { type: 'string', default: '90' },
@@ -98,6 +106,8 @@ interface MoverState {
   address: Hex;
   privateKey: Hex;
   fundings: Partial<Record<ChainSlug, Funding>>;
+  /** Refill rounds by label: movers topped up again after losing their USDC. */
+  refills?: Record<string, Partial<Record<ChainSlug, Funding>>>;
 }
 
 interface State {
@@ -237,7 +247,8 @@ async function moversInFlight(): Promise<Set<string> | undefined> {
       let cursor: string | undefined;
       do {
         const page = await gum.listDeposits({ status, limit: 200, cursor });
-        for (const d of page.items) busy.add(`${d.chain_id}:${getAddress(d.receiver)}`);
+        // An expired deposit can never return USDC to its mover (executing it pays `recovery`).
+        for (const d of page.items) if (Date.parse(d.expires_at) > Date.now()) busy.add(`${d.chain_id}:${getAddress(d.receiver)}`);
         cursor = page.next_cursor;
       } while (cursor);
     }
@@ -338,7 +349,11 @@ async function broadcast(state: State, j: Job, a: Attempt) {
     if (/already known|known transaction|already imported|alreadyknown/.test(t)) a.broadcast = true;
     else if (/nonce too low|nonce has already been used|nonce is too low|oldnonce/.test(t)) a.rejected = 'nonce too low';
     else if (/underpriced|replacement fee too low|fee too low/.test(t)) a.rejected = 'underpriced';
-    else if (/insufficient funds/.test(t)) {
+    else if (/took too long|timeout|timed out|fetch failed|http request failed|econnreset|socket|503|502|429/.test(t)) {
+      // Unknown whether the node took it. Leave it unconfirmed: the loop checks for a receipt and
+      // re-sends the same bytes if the node doesn't know the transaction.
+      console.log(`    broadcast uncertain (${String((e as Error).message).slice(0, 80)}); will re-check`);
+    } else if (/insufficient funds/.test(t)) {
       a.rejected = 'insufficient funds for gas';
       save(state);
       throw new Error(`funder has insufficient ${VIEM_CHAINS[j.chain].nativeCurrency.symbol} for gas on ${j.chain}`);
@@ -446,15 +461,42 @@ async function main() {
   }
   save(state);
 
-  // Each mover needs its USDC on the chain it pays on now.
   const movers = state.movers.slice(0, moverCount);
-  const jobs: Job[] = movers.map((m) => {
-    const chain = targetChain(m.index);
-    const f = (m.fundings[chain] ??= { status: 'pending', attempts: [], history: [] });
-    return { m, chain, f };
-  });
-  save(state);
   const busy = await moversInFlight();
+  const label = args.refill;
+  let jobs: Job[];
+  let notInRound = 0;
+  if (label) {
+    if (!/^[\w.-]{1,64}$/.test(label)) fail('--refill label: letters, digits, dot, dash, underscore (max 64)');
+    // Membership is decided when a mover first joins the round, then kept: re-runs resume the same set.
+    jobs = [];
+    for (const m of movers) {
+      const chain = targetChain(m.index);
+      const existing = m.refills?.[label]?.[chain];
+      if (existing) {
+        jobs.push({ m, chain, f: existing });
+        continue;
+      }
+      const inFlight = busy?.has(`${VIEM_CHAINS[chain].id}:${getAddress(m.address)}`);
+      const short = !inFlight && (await usdcBalance(chain, m.address)) < amount;
+      if (!short) {
+        notInRound++;
+        continue;
+      }
+      const round = ((m.refills ??= {})[label] ??= {});
+      jobs.push({ m, chain, f: (round[chain] = { status: 'pending', attempts: [], history: [] }) });
+      await sleep(100); // pace the balance reads
+    }
+    console.log(`\nRefill round "${label}": ${jobs.length} mover(s) in the round${notInRound ? `, ${notInRound} not needing a refill` : ''}.`);
+  } else {
+    // Each mover needs its USDC on the chain it pays on now.
+    jobs = movers.map((m) => {
+      const chain = targetChain(m.index);
+      const f = (m.fundings[chain] ??= { status: 'pending', attempts: [], history: [] });
+      return { m, chain, f };
+    });
+  }
+  save(state);
   const isBusy = (j: Job) => j.f.status !== 'confirmed' && j.f.attempts.length === 0 && busy?.has(`${VIEM_CHAINS[j.chain].id}:${getAddress(j.m.address)}`);
 
   // ---- plan ----
@@ -488,7 +530,7 @@ async function main() {
   }
   // USDC left behind on chains movers no longer pay on: reported, never moved by this script.
   const elsewhere = new Map<string, number>();
-  for (const j of jobs) {
+  for (const j of label ? [] : jobs) {
     for (const [slug, f] of Object.entries(j.m.fundings)) {
       if (slug !== j.chain && f?.status === 'confirmed') elsewhere.set(slug, (elsewhere.get(slug) ?? 0) + 1);
     }
@@ -503,7 +545,7 @@ async function main() {
     const skippedBusy = jobs.filter(isBusy).length;
     if (todo.length) console.log('\nNothing can be sent until the funder is topped up.');
     else if (skippedBusy) console.log(`\nNothing to send now; ${skippedBusy} mover${skippedBusy === 1 ? ' has a deposit' : 's have deposits'} in flight. Re-run later.`);
-    else console.log('\nEvery mover is funded.');
+    else console.log(label ? `\nRefill round "${label}" is complete.` : '\nEvery mover is funded.');
     writeEnvFile(state);
     process.exit(todo.length ? 1 : 0);
   }
@@ -527,7 +569,7 @@ async function main() {
   );
 
   const done = jobs.filter((j) => j.f.status === 'confirmed').length;
-  console.log(`\n${done}/${jobs.length} movers funded on the chain they pay on.`);
+  console.log(label ? `\nRefill round "${label}": ${done}/${jobs.length} refilled.` : `\n${done}/${jobs.length} movers funded on the chain they pay on.`);
   results.forEach((r, i) => {
     if (r.status === 'rejected') console.error(`  ✗ ${chainsToRun[i]}: ${(r.reason as Error).message}`);
   });

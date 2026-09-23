@@ -89,9 +89,15 @@ pnpm test:e2e         # full local stack with injected failures; asserts the bot
 3. **Configure.** `cp .env.example .env`, then fill in `GUM_API_KEY` (use a dedicated key: the bot is
    designed to own its 50 req/s), `FUNDER_PRIVATE_KEY`, `MOVER_PRIVATE_KEYS` and the three RPC URLs.
    Tune `GAS_*` per chain.
-4. **Later refills.** If a failed settlement strands a mover's USDC, `pnpm bootstrap` prints what
-   each mover is missing, and `pnpm bootstrap --execute` sends it. It skips movers with
-   deposits in flight.
+4. **When movers lose their USDC** (deposits that expired after payment):
+   - `pnpm recover-stranded <file>` sends the stranded USDC to Gum's recovery address. It runs
+     `PaymentFactory.execute` for each expired payment, with the funder paying gas. `<file>` lists the
+     deposits and their terms (see `.movers/stranded-*.json`).
+   - `pnpm setup-movers --refill <label>` then refills the movers that are short. On its first run a
+     round takes every mover below one deposit that has no live deposit in flight. Re-running the same
+     label resumes that exact set and never pays a mover twice; a new incident gets a new label.
+
+   Both scripts are crash-safe and re-runnable, like the initial funding.
 5. `pnpm dev`, or build and run: `pnpm build && pnpm start`.
 
 ### Railway (long-running)
@@ -116,6 +122,7 @@ replica, no deploy overlap, and a required `/data` volume).
    | `DASHBOARD_PASSWORD` | long random string | **required**: the bot refuses to start on Railway without it |
    | `METRICS_TOKEN` | random string | protects `/metrics` |
    | `ALERT_WEBHOOK_URL` | Slack/Discord incoming webhook | recommended: nobody watches a background bot |
+   | `RAILWAY_RUN_UID` | `0` | **required with the volume**: Railway mounts `/data` owned by root, and the image runs as `node` (without it the bot crash-loops on "unable to open database file") |
 
 3. `railway up --detach`, then `railway domain` for the dashboard URL.
 
